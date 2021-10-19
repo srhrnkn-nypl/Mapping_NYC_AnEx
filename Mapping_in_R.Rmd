@@ -1,0 +1,771 @@
+---
+title: "Making Maps in R"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: inline
+---
+
+| *AnEx Learning Summit*
+| *Thursday October 21, 2021*
+| 
+| *Sarah Rankin*
+| *Quantitative Data Analyst*
+| *Stategy and Public Impact*
+| *New York Public Library*
+| *sarahrankin\@nypl.org*
+| 
+
+## Topics
+
+-   Static maps with sf and ggplot
+-   Dynamic maps with leaflet
+
+## Setup
+
+This is an Rmarkdown notebook. If you're viewing it in a web browser, you can click on Code-\>Download Rmd in the top right corner, then open it in RStudio and to run/edit the code. If you don't use RStudio you can also just copy the code into your editor of choice.
+
+We'll be using a variety of `tidyverse` packages as well as `sf` and `leaflet`. If you don't have these packages installed, uncomment the following code and install them now. (It'll take a little while.)
+
+```{r}
+# install.packages("tidyverse")
+# install.packages("sf")
+# install.packages("leaflet")
+
+```
+
+```{r message=FALSE, warning=FALSE}
+#load just the tidyverse for now
+library(tidyverse)
+
+```
+
+## Quick ggplot refresher
+
+Let's create some very simple point data.
+
+```{r}
+five_points <- data.frame(var1 = 1:5, var2 = as.integer(c(3,5,4,4,1)))
+five_points 
+```
+
+-   Call `ggplot()` to make a canvas
+
+-   Define aesthetics with `aes()` - these map your data to spatial properties like the x and y dimensions, or visual aesthetics like color, fill, alpha etc
+
+-   Add a geom - here, `geom_point()`
+
+```{r}
+five_points %>% 
+  ggplot(aes(x=var1, y=var2)) +
+  geom_point()
+  
+```
+
+-   Add flags indicating whether each variable is even or odd (`%%` is the modulo function)
+
+```{r}
+five_points <- five_points %>%  
+  mutate(var1_odd_or_even = ifelse(var1%%2==0,"even","odd"),
+         var2_odd_or_even = ifelse(var2%%2==0,"even","odd"))
+
+five_points
+
+
+```
+
+-   Map "var_1\_is even" to the color aesthetic
+
+```{r}
+five_points %>% 
+  ggplot(aes(x=var1, y=var2,color = var1_odd_or_even)) +
+  geom_point(size = 5) 
+
+
+```
+
+#### Aesthetics in ggplot
+
+-   Color is for lines (including outlines of shapes)
+
+-   Fill is for areas (filling in shapes)
+
+    -   but our points are filled in based on the color aesthetic?!
+
+    -   the default point shape is shape 19 ("circle") - just a solid circle with the color taken from the color aesthetic; shape 21 ("filled circle") is a circle with a fill and an outline, which can be specified separately
+
+-   Generally, you can either map the aesthetic to a data point or specify its value outside of the `aes()` function. If you do neither, a default will be used.
+
+-   Aesthetic mapping/specification can be done in the original ggplot() call, or within individual geoms
+
+Good general reference on specifying aesthetics:
+
+<https://ggplot2.tidyverse.org/articles/ggplot2-specs.html#point-1>
+
+```{r}
+five_points %>% 
+  ggplot(aes(x=var1, 
+             y=var2,
+             color = var1_odd_or_even,
+             fill = var2_odd_or_even)) +
+  geom_point(size = 5, 
+             shape = 21,
+             stroke = 2) 
+
+```
+
+### Points as Maps
+
+-   Longitude and Latitude are (on a 2d map) x and y coordinates
+
+-   Let's get some coordinate data from the NYC facilities database
+
+<https://data.cityofnewyork.us/City-Government/Facilities-Database/ji82-xba5>
+
+```{r}
+public_libraries <- jsonlite::fromJSON("https://data.cityofnewyork.us/resource/ji82-xba5.json?factype=PUBLIC%20LIBRARY") 
+
+public_libraries %>% str()
+```
+
+We need latitude and longitude to be numeric, not strings
+
+```{r}
+public_libraries <- public_libraries %>%  
+  mutate(latitude=as.numeric(latitude),longitude=as.numeric(longitude))
+
+public_libraries %>% 
+  select(facname,latitude,longitude) %>% 
+  str()
+
+
+```
+
+-   Map the longitude and latitude to the x and y aesthetics
+
+    -   Everyone has a strategy for remembering which is which - I like to think of soup dumplings - "**X**iao **long** bao" - credit to [\@seankross](https://twitter.com/seankross/status/1134326728476712960)
+
+```{r}
+
+public_libraries %>% 
+  ggplot(aes(x=longitude,
+             y=latitude)) + 
+  geom_point() 
+
+
+
+```
+
+-   That does not look like a map. Let's look at our data.
+
+```{r}
+public_libraries %>% 
+  select(latitude,longitude) %>% 
+  summary()
+
+
+```
+
+-   At least some of our lat/long values are way out of expected range
+
+```{r}
+public_libraries %>% 
+  filter(latitude<39|longitude>74) %>% 
+  select(latitude,longitude,facname,addressnum,streetname,address,city,boro)
+
+
+```
+
+-   Looks like we can clean this up by just filtering out these two cases
+
+```{r}
+
+ public_libraries <- public_libraries %>%   
+  filter(!latitude==0,
+         !longitude==0)
+ 
+ public_libraries %>% nrow()
+
+```
+
+-   Try again
+
+```{r}
+public_libraries %>% 
+  ggplot(aes(x=longitude,
+             y=latitude)) + 
+  geom_point() 
+
+```
+
+-   Make it a bit prettier
+
+    -   Color the points and rename the legend with `scale_color_manual()`
+
+    -   Get rid of axes and background with `theme_void()`
+
+```{r}
+#define some system colors - a named vector of colors will map the colors to the values of the color aesthetic (backticks let you use non-syntactic R names)
+#color values can be names from R's built-in colors or hex codes
+
+library_system_colors <- c(`New York Public Library`="red3",
+                   `Brooklyn Public Library` = "orange2",
+                   `Queens Public Library` = "purple3")
+
+public_libraries %>% 
+  ggplot(aes(x=longitude,
+             y=latitude,
+             color = overagency)) + 
+  geom_point() +
+  scale_color_manual(values = library_system_colors,name = "System") +
+  theme_void()
+
+
+
+```
+
+## The `sf` (simple features) package
+
+<https://r-spatial.github.io/sf/>
+
+```{r }
+library(sf)
+```
+
+Simple features is a set of standards for defining two-dimensional geometries, used by various GIS systems, building up from x-y coordinates within a coordinate reference system (crs).
+
+-   POINT
+
+-   LINESTRING
+
+-   POLYGON
+
+-   MULTIPOINT
+
+-   MULTIPOLYGON
+
+`sf` package in R lets you:
+
+-   store geometry data as a list-column in a data frame or tibble, alongside other data columns
+
+-   import data into the R sf format from various GIS formats
+
+-   manipulate sf geometries (concatenate, subtract, find overlaps, etc)
+
+You can make an `sf` object directly from a data frame:
+
+```{r}
+
+five_points_sf <- five_points %>% st_as_sf(coords = c("var1","var2")) 
+
+five_points_sf %>% print()
+```
+
+-   There is a special geom for sf objects: `geom_sf`
+
+-   When you add geom_sf to a plot (and the `sf` package is loaded), ggplot will plot the geometry column - plotting method depends on the sf geometry type (point, polygon, etc)
+
+```{r}
+
+five_points_sf %>% 
+  ggplot() + 
+  geom_sf(
+    aes(color = var1_odd_or_even,
+              fill = var2_odd_or_even),
+          size = 5,
+          shape = 21,
+          stroke = 2
+    )
+
+
+```
+
+### Map Polygons
+
+But for mapping we usually import geometry data from an external dataset.
+
+Formats:
+
+-   GEOJSON
+
+-   ESRI shapefile
+
+-   Many others (`st_drivers(what = "vector")`)
+
+NYC geography resources:
+
+<https://www1.nyc.gov/site/planning/data-maps/open-data/census-download-metadata.page>
+
+-   Get the NYC PUMA (Public Use Microdata Area) geographies in GEOJSON format (PUMAs in NYC correspond - mostly - to Community Districts)
+
+```{r cache=TRUE}
+
+#read geojson format directly from download link
+pumas_2010_geojson <- st_read("https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_Public_Use_Microdata_Areas_PUMAs_2010/FeatureServer/0/query?where=1=1&outFields=*&outSR=4326&f=pgeojson") %>% 
+  st_as_sf()
+
+pumas_2010_geojson %>% print()
+
+ 
+
+
+```
+
+-   Shapefile format is also very common
+
+```{r cache=TRUE}
+#for shapefiles, download the zipped shapefile directory into your current working directory, then unzip (can do this outside R if you prefer!)
+#download
+download.file(url = "https://www1.nyc.gov/assets/planning/download/zip/data-maps/open-data/nypuma2010_21c.zip",destfile = "nypuma2010_21c.zip")
+#unzip
+unzip("nypuma2010_21c.zip")
+
+#read in the shapefile
+pumas_2010_shp <- st_read("nypuma2010_21c/nypuma2010.shp") %>% st_as_sf()
+
+
+pumas_2010_shp %>% print()
+
+```
+
+-   Again, adding `geom_sf()` to a ggplot renders the data in the geometry column - in this case it draws polygons because the geometry type is multipolygon
+
+```{r }
+pumas_2010_geojson %>% 
+  ggplot() + 
+  geom_sf()
+
+```
+
+-   Add our points to this map by specifying different data sources within the `geom_sf` and `geom_point` calls
+
+-   `sf` objects can have a CRS (coordinate reference system) defined
+
+```{r }
+
+  ggplot() + 
+  geom_sf(data = pumas_2010_geojson,
+    fill = "grey",
+    color = "grey"
+    ) +
+  geom_point(data = public_libraries, 
+             aes(x=longitude,
+                 y=latitude,
+                 color = overagency)) +
+  scale_color_manual(name = "System",values = library_system_colors) +
+  #adding coord sf ensures crs matches
+  coord_sf() +
+  theme_void()
+
+
+```
+
+### Chloropleths
+
+-   Map areas colored by data value
+
+#### Broadband adoption in New York City
+
+-   NYC Open Data: [NYC's Internet Master Plan: Home Broadband and Mobile Broadband Adoption by PUMA](https://data.cityofnewyork.us/City-Government/Internet-Master-Plan-Home-Broadband-and-Mobile-Bro/g5ah-i2sh)
+
+-   Based on American Community Survey Data; shows share of households that have both mobile and home broadband
+
+```{r paged.print=FALSE, cache=TRUE}
+
+broadband_use <- read_csv("https://data.cityofnewyork.us/api/views/g5ah-i2sh/rows.csv?accessType=DOWNLOAD")
+
+
+#clean up the names a bit
+broadband_use <- broadband_use %>% 
+  rename(PUMA = `PUMA (Public Use Microdata Sample Areas)`,
+         broadband_adoption = `Home Broadband and Mobile Broadband Adoption (Percentage of  Households)`,
+         broadband_adoption_quartile = `Home Broadband and Mobile Broadband Adoption by Quartiles (High, Medium-High, Medium-Low, Low)`)
+
+broadband_use %>% head()
+
+
+```
+
+-   Add the broadband data to our PUMA geom dataset
+
+```{r cache=TRUE}
+
+#convert PUMA to string; make adoption quartile into factor so it'll sort correctly  
+broadband_use <- broadband_use %>% 
+  mutate(PUMA = as.character(PUMA),
+         broadband_adoption_quartile = factor(broadband_adoption_quartile,
+                                              levels = c("High", "Medium High", "Medium Low", "Low")))
+
+pumas_2010_geojson <- pumas_2010_geojson %>% 
+  left_join(broadband_use, by = "PUMA")
+
+pumas_2010_geojson %>% print()
+
+
+```
+
+-   Map the `geom_sf` fill aesthetic to broadband_adoption
+
+-   Use scale_fill_gradient to specify fill colors
+
+```{r}
+
+  ggplot() + 
+  geom_sf(data = pumas_2010_geojson,
+    aes(fill = broadband_adoption),
+    color = "grey"
+    ) +
+  geom_point(data = public_libraries,
+             aes(x=longitude,
+                 y=latitude,
+                 color = overagency),
+             size = 2) +
+  scale_color_manual(name = "System",values = library_system_colors) +
+  scale_fill_gradient(low = "grey70",high = "grey10", labels = scales::percent_format(accuracy = 1), name = "Broadband adoption") +
+  coord_sf() +
+  theme_void()
+
+```
+
+-   Or define discrete colors and use `scale_fill_manual`
+
+```{r}
+
+broadband_cols <- c("grey10","grey30","grey50","grey70") %>% set_names(levels(pumas_2010_geojson$broadband_adoption_quartile))
+
+
+ggplot() + 
+  geom_sf(data = pumas_2010_geojson,
+    aes(fill = broadband_adoption_quartile),
+    color = "grey"
+    ) +
+  geom_point(data = public_libraries,
+             aes(x=longitude,
+                 y=latitude,
+                 color = overagency),
+             size = 2) +
+  scale_color_manual(name = "System",values = library_system_colors) +
+  scale_fill_manual(values = broadband_cols, name = "Broadband adoption") +
+  coord_sf() +
+  theme_void()
+
+
+```
+
+#### Median income
+
+<https://www1.nyc.gov/site/planning/planning-level/nyc-population/american-community-survey.page>
+
+-   Download data and add it to our pumas_2010_geojson data frame
+
+```{r cache=TRUE}
+
+
+download.file(url = "https://www1.nyc.gov/assets/planning/download/office/planning-level/nyc-population/acs/econ_2018_acs5yr_puma.xlsx",
+              destfile = "econ_2018_acs5yr_puma.xlsx")
+
+econdata_puma <- readxl::read_xlsx("econ_2018_acs5yr_puma.xlsx", sheet = "EconData")
+
+pumas_2010_geojson <- pumas_2010_geojson %>% 
+  left_join(econdata_puma %>% 
+              select(PUMA = GeoID,GeogName,median_household_income = MdHHIncE) %>% 
+              mutate(median_income_category = 
+                       cut(median_household_income,
+                           breaks = c(0,50000,75000,100000,150000),
+                           labels = c("$0-50K","$50-75K","$75-100K","$100K+"))))
+
+
+```
+
+-   Create a new color scale with some greens
+
+```{r}
+median_income_category_cols <- c("#a9ccbc","#7fb29b","#4c7f68","#335545") %>% set_names(levels(pumas_2010_geojson$median_income_category))
+
+ggplot() + 
+  geom_sf(data = pumas_2010_geojson,
+    aes(fill = median_income_category),
+    color = "grey"
+    ) +
+  geom_point(data = public_libraries,
+             aes(x=longitude,
+                 y=latitude,
+                 color = overagency),
+             size = 2) +
+  scale_color_manual(name = "System",values = library_system_colors) +
+  scale_fill_manual(values = median_income_category_cols, name = "Median income") +
+  coord_sf() +
+  theme_void() 
+
+```
+
+# Leaflet: interactive maps
+
+```{r}
+library(leaflet)
+
+```
+
+[Leaflet](https://leafletjs.com): open source javascript library for making interactive maps on various platforms
+
+R has a `leaflet` package that lets you create leaflet "widgets" within R
+
+Create a map, add tiles, set the view
+
+-   Similar to ggplot in that we keep adding layers/elements, except we continue using the magrittr pipe `%>%` to add elements to a leaflet map (instead of the ggplot `+`)
+
+-   for now we're creating a map without any data
+
+```{r}
+leaflet() %>% 
+  #addTiles() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  setView(lat = 40.7,lng = -74, zoom = 10)
+
+```
+
+Add our public library branches
+
+-   `addCircles()` adds points to the map
+
+-   can specify the data source within the `addCircles()` call or in the original `leaflet()` call
+
+-   to refer to fields in our data frame, use the tilde prefix \~
+
+```{r}
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  setView(lat = 40.7,lng = -74, zoom = 10) %>%
+  addCircles(data = public_libraries,
+             lng = ~longitude,
+             lat = ~latitude
+             )
+
+
+```
+
+-   Use `colorFactor()` to create a palette to color the circles by system
+
+-   Use the `label` and `popup` arguments to add hover/click info
+
+```{r}
+pal_system <- colorFactor(palette = library_system_colors ,
+                          domain = unique(public_libraries$overagency),
+                          ordered = T)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  setView(lat = 40.7,lng = -74, zoom = 10) %>%
+  addCircles(data = public_libraries,
+             lng = ~longitude,
+             lat = ~latitude,
+             color = ~pal_system(overagency),
+             fill = ~pal_system(overagency),
+             radius = 100,
+             label = ~facname,
+             popup = ~address
+             ) %>% 
+  addLegend(position = "topleft",
+            pal = pal_system, 
+            values = unique(public_libraries$overagency))
+
+
+
+
+```
+
+Because we have a basemap, we don't need the PUMA polygons to create a basic map. But we can add them if we want our chloropleths on the interactive map.
+
+-   Fill color argument in leaflet is `fillColor;` specify opacity with `fillOpacity`
+
+-   Use `stroke` to specify whether boundary lines are drawn; `color` , `weight`, and `opacity` to control their appearance
+
+```{r}
+
+pal_broadband <- colorFactor(palette = broadband_cols, 
+                             domain = levels(pumas_2010_geojson$broadband_adoption_quartile),
+                             ordered = T)
+
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  setView(lat = 40.7,lng = -74, zoom = 10) %>%
+  addPolygons(data = pumas_2010_geojson,
+              fillColor = ~pal_broadband(broadband_adoption_quartile),
+              fillOpacity = .7,
+              color = "grey",
+              stroke = T,
+              weight = 1,
+              label = ~PUMA,
+              popup = ~paste0("<b>PUMA ",PUMA,"</b>",
+                             "<br>", GeogName,
+                             "<br>Broadband adoption: ",round(broadband_adoption*100,0),"%",
+                             "<br>Broadband adoption category: ",broadband_adoption_quartile)) 
+
+
+```
+
+Combine it with the libraries and add a legend
+
+-   Order matters - each successive layer is plotted on top of the previous ones
+
+```{r}
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  setView(lat = 40.7,lng = -74, zoom = 10) %>%
+  addPolygons(data = pumas_2010_geojson,
+              fillColor = ~pal_broadband(broadband_adoption_quartile),
+              fillOpacity = .7,
+              color = "grey",
+              stroke = T,
+              weight = 1,
+              label = ~PUMA,
+              popup = ~paste0("<b>PUMA ",PUMA,"</b>",
+                              "<br>", GeogName,
+                             "<br>Broadband adoption: ",round(broadband_adoption*100,0),"%",
+                             "<br>Broadband adoption category: ",broadband_adoption_quartile)) %>% 
+    addCircles(data = public_libraries,
+             lng = ~longitude,
+             lat = ~latitude,
+             color = ~pal_system(overagency),
+             fill = ~pal_system(overagency),
+             radius = 100,
+             label = ~facname,
+             popup = ~address
+             ) %>% 
+  addLegend(position = "topleft",
+            pal = pal_system, 
+            values = public_libraries$overagency,
+            title = "Library System") %>% 
+  addLegend(position = "topleft",
+            pal = pal_broadband, 
+            values =  pumas_2010_geojson$broadband_adoption_quartile,
+            opacity = .7,
+            title = "Broadband Access")
+
+```
+
+Visualize more than one layer
+
+-   Use `group` argument within each layer to specify which group it belongs to
+
+-   `addLayersControl` adds a control to toggle between layers or turn layers on and off
+
+-   assigning the map to an object creates a leaflet object with class `htmlwidget`
+
+```{r}
+pal_income <- colorFactor(palette = median_income_category_cols, 
+                             domain = levels(pumas_2010_geojson$median_income_category),
+                             ordered = T)
+
+libraries_map <- leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  setView(lat = 40.7,lng = -74, zoom = 10) %>%
+  addPolygons(data = pumas_2010_geojson,
+              fillColor = ~pal_broadband(broadband_adoption_quartile),
+              fillOpacity = .7,
+              color = "grey",
+              stroke = T,
+              weight = 1,
+              label = ~PUMA,
+              popup = ~paste0("<b>PUMA ",PUMA,"</b>",
+                              "<br>", GeogName,
+                             "<br>Broadband adoption: ",round(broadband_adoption*100,0),"%",
+                             "<br>Broadband adoption category: ",broadband_adoption_quartile),
+              group = "Broadband") %>% 
+  addPolygons(data = pumas_2010_geojson,
+              fillColor = ~pal_income(median_income_category),
+              fillOpacity = .7,
+              color = "grey",
+              stroke = T,
+              weight = 1,
+              label = ~PUMA,
+              popup = ~paste0("<b>PUMA ",PUMA,"</b>",
+                              "<br>", GeogName,
+                             "<br>Median income: $",format(median_household_income,big.mark = ","),
+                             "<br>Median income category: ",median_income_category),
+              group = "income") %>% 
+    addCircles(data = public_libraries,
+             lng = ~longitude,
+             lat = ~latitude,
+             color = ~pal_system(overagency),
+             fill = ~pal_system(overagency),
+             opacity = 1,
+             fillOpacity = 1,
+             radius = 100,
+             label = ~facname,
+             popup = ~address#,
+             #group = "Broadband"
+             ) %>% 
+    # addCircles(data = public_libraries,
+    #          lng = ~longitude,
+    #          lat = ~latitude,
+    #          color = ~pal_system(overagency),
+    #          fill = ~pal_system(overagency),
+    #          opacity = 1,
+    #          fillOpacity = 1,
+    #          radius = 100,
+    #          label = ~facname,
+    #          popup = ~address,
+    #          group = "Income"
+    #          ) %>% 
+  addLegend(position = "topleft",
+            pal = pal_system, 
+            values = public_libraries$overagency,
+            title = "Library System") %>% 
+  addLegend(position = "topleft",
+            pal = pal_broadband, 
+            values =  pumas_2010_geojson$broadband_adoption_quartile,
+            opacity = .7,
+            title = "Broadband Access",
+            group = "Broadband") %>% 
+  addLegend(position = "topleft",
+            pal = pal_income, 
+            values =  pumas_2010_geojson$median_income_category,
+            opacity = .7,
+            title = "Median household income",
+            group = "Income") %>% 
+  addLayersControl(
+            baseGroups = c("Broadband","Income"),
+            options = layersControlOptions(collapsed = F)#,
+            #overlayGroups = c("Branches")
+  ) 
+
+
+libraries_map
+
+```
+
+The htmlwidgets package lets you save this map as an html file, which can then be opened in a browser or embedded in a web page
+
+```{r}
+htmlwidgets::saveWidget(libraries_map,
+                        file = "libraries_map.html",
+                        title = "NYC Libraries:  Broadband Access and Median Income")
+
+```
+
+## Other resources
+
+-   [`tidycensus`](https://walker-data.com/tidycensus/) package: amazing R interface for Census/ACS API, including geometries
+
+    -   [Analyzing Census Data: Methods Maps and Models in R](https://walker-data.com/census-r/)
+
+-   [`tigris`](https://github.com/walkerke/tigris) package: more Census geometries
+
+-   [`rnaturalearth`](https://docs.ropensci.org/rnaturalearth/): world map data
+
+-   [`tmap`](https://cran.r-project.org/web/packages/tmap/vignettes/tmap-getstarted.html): Alternative package for tmapping in R, with ggplot-like syntax - some find this the best way to get started
+
+-   [`mapboxapi`](https://walker-data.com/mapboxapi/) package: more basemap options, geocoding services, isochrones (requires setting up a mapbox account)
+
+-   Geocoding
+
+    -   Within NYC, [Geosupport](https://www1.nyc.gov/site/planning/data-maps/open-data/dwn-gde-home.page)
+
+    -   [Urban Institute overview of other tools](https://urban-institute.medium.com/choosing-a-geocoder-for-the-urban-institute-86192f656c5f)
+
+-   [Geocomputation with R](https://geocompr.robinlovelace.net/index.html)
